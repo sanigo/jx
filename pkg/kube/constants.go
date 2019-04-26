@@ -2,7 +2,7 @@ package kube
 
 const (
 	// DefaultChartMuseumURL default URL for Jenkins X Charts
-	DefaultChartMuseumURL = "http://chartmuseum.jenkins-x.io"
+	DefaultChartMuseumURL = "https://helm-jenkinsx.jointforce.com"
 
 	// ChartAmbassador the default chart for ambassador
 	ChartAmbassador = "datawire/ambassador"

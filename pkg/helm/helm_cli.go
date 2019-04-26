@@ -103,6 +103,11 @@ func (h *HelmCLI) Init(clientOnly bool, serviceAccount string, tillerNamespace s
 	if clientOnly {
 		args = append(args, "--client-only")
 	}
+	stableUrl := os.Getenv("HELM_REPO_STABLE_URL")
+	if stableUrl == "" {
+		stableUrl = "https://helm-stable.jointforce.com"
+	}
+	args = append(args, "--stable-repo-url", stableUrl)
 	if serviceAccount != "" {
 		args = append(args, "--service-account", serviceAccount)
 	}
