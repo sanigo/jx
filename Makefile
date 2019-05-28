@@ -19,11 +19,15 @@ rwildcard=$(wildcard $1$2) $(foreach d,$(wildcard $1*),$(call rwildcard,$d/,$2))
 
 SHELL := /bin/bash
 NAME := jx
+BUILD_TARGET = build
+MAIN_SRC_FILE=cmd/jx/jx.go
 GO := GO111MODULE=on go
 GO_NOMOD :=GO111MODULE=off go
 REV := $(shell git rev-parse --short HEAD 2> /dev/null || echo 'unknown')
 REV := $(shell git rev-parse --short HEAD 2> /dev/null || echo 'unknown')
-ORG_REPO := jenkins-x/jx
+ORG := jenkins-x
+ORG_REPO := $(ORG)/$(NAME)
+RELEASE_ORG_REPO := $(ORG_REPO)
 ROOT_PACKAGE := github.com/$(ORG_REPO)
 GO_VERSION := $(shell $(GO) version | sed -e 's/^[^0-9.]*\([0-9.]*\).*/\1/')
 GO_DEPENDENCIES := $(call rwildcard,pkg/,*.go) $(call rwildcard,cmd/jx/,*.go)
@@ -71,7 +75,7 @@ endif
 
 ifdef PULL_PULL_SHA
 CODECOV_SHA := $(PULL_PULL_SHA)
-else ifdef $(PULL_BASE_SHA)
+else ifdef PULL_BASE_SHA
 CODECOV_SHA := $(PULL_BASE_SHA)
 else
 CODECOV_SHA := $(shell git rev-parse HEAD 2> /dev/null || echo '')
@@ -98,7 +102,25 @@ endif
 
 #End Codecov
 
+# support for building a covered jx binary (one with the coverage instrumentation compiled in). The `build-covered`
+# target also builds the covered binary explicitly
+COVERED_MAIN_SRC_FILE=./cmd/jx
+COVERAGE_BUILDFLAGS = -c -coverpkg=./... -covermode=count
+COVERAGE_BUILD_TARGET = test
+ifdef COVERED_BINARY
+BUILDFLAGS += $(COVERAGE_BUILDFLAGS)
+BUILD_TARGET = $(COVERAGE_BUILD_TARGET)
+MAIN_SRC_FILE = $(COVERED_MAIN_SRC_FILE)
+endif
+
+# Build the Jenkins X distribution
+ifdef DISTRO
+BUILDFLAGS += -ldflags "-X $(ROOT_PACKAGE)/pkg/features.FeatureFlagToken=$(FEATURE_FLAG_TOKEN)"
+RELEASE_ORG_REPO := cloudbees/cloudbees-jenkins-x-distro
+endif
+
 TEST_PACKAGE ?= ./...
+COVERFLAGS=-coverprofile=cover.out --covermode=count --coverpkg=./...
 
 .PHONY: list
 list: ## List all make targets
@@ -117,7 +139,11 @@ print-version: ## Print version
 	@echo $(VERSION)
 
 build: $(GO_DEPENDENCIES) ## Build jx binary for current OS
-	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(BUILDFLAGS) -o build/$(NAME) cmd/jx/jx.go
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) $(BUILD_TARGET) $(BUILDFLAGS) -o build/$(NAME) $(MAIN_SRC_FILE)
+
+.PHONY: build-covered
+build-covered: $(GO_DEPENDENCIES) ## Build jx binary for current OS with coverage instrumentation to build/$(NAME).covered
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) $(COVERAGE_BUILD_TARGET) $(BUILDFLAGS) $(COVERAGE_BUILDFLAGS) -o build/$(NAME).covered $(COVERED_MAIN_SRC_FILE)
 
 get-test-deps: ## Install test dependencies
 	$(GO_NOMOD) get github.com/axw/gocov/gocov
@@ -129,10 +155,10 @@ tidy-deps: ## Cleans up dependencies
 	@$(MAKE) install-generate-deps
 
 test: ## Run the unit tests
-	CGO_ENABLED=$(CGO_ENABLED) $(GO) test -p 1 -count=1 -coverprofile=cover.out -failfast -short ./...
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) test -p 1 -count=1 $(COVERFLAGS) -failfast -short ./...
 
 test-verbose: ## Run the unit tests in verbose mode
-	CGO_ENABLED=$(CGO_ENABLED) $(GO) test -v -coverprofile=cover.out -failfast ./...
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) test -v $(COVERFLAGS) -failfast ./...
 
 test-report: get-test-deps test ## Create the test report
 	@gocov convert cover.out | gocov report
@@ -141,7 +167,7 @@ test-report-html: get-test-deps test ## Create the test report in HTML format
 	@gocov convert cover.out | gocov-html > cover.html && open cover.html
 
 test-slow: ## Run unit tests sequentially
-	@CGO_ENABLED=$(CGO_ENABLED) $(GO) test -count=1 $(TESTFLAGS) -coverprofile=cover.out ./...
+	@CGO_ENABLED=$(CGO_ENABLED) $(GO) test -count=1 $(TESTFLAGS) $(COVERFLAGS) ./...
 
 test-slow-report: get-test-deps test-slow
 	@gocov convert cover.out | gocov report
@@ -150,13 +176,13 @@ test-slow-report-html: get-test-deps test-slow
 	@gocov convert cover.out | gocov-html > cover.html && open cover.html
 
 test-integration: ## Run the integration tests 
-	@CGO_ENABLED=$(CGO_ENABLED) $(GO) test -count=1 -tags=integration -coverprofile=cover.out -short ./...
+	@CGO_ENABLED=$(CGO_ENABLED) $(GO) test -count=1 -tags=integration  -short ./...
 
 test-integration1:
-	@CGO_ENABLED=$(CGO_ENABLED) $(GO) test -count=1 -tags=integration -coverprofile=cover.out -short ./... -test.v -run $(TEST)
+	@CGO_ENABLED=$(CGO_ENABLED) $(GO) test -count=1 -tags=integration $(COVERFLAGS) -short ./... -test.v -run $(TEST)
 
 test-rich-integration1:
-	@CGO_ENABLED=$(CGO_ENABLED) richgo test -count=1 -tags=integration -coverprofile=cover.out -short -test.v $(TEST_PACKAGE) -run $(TEST)
+	@CGO_ENABLED=$(CGO_ENABLED) richgo test -count=1 -tags=integration $(COVERFLAGS) -short -test.v $(TEST_PACKAGE) -run $(TEST)
 
 test-integration-report: get-test-deps test-integration ## Create the integration tests report
 	@gocov convert cover.out | gocov report
@@ -165,7 +191,7 @@ test-integration-report-html: get-test-deps test-integration
 	@gocov convert cover.out | gocov-html > cover.html && open cover.html
 
 test-slow-integration: ## Run the integration tests sequentially
-	@CGO_ENABLED=$(CGO_ENABLED) $(GO) test -p 2 -count=1 -tags=integration -coverprofile=cover.out ./...
+	@CGO_ENABLED=$(CGO_ENABLED) $(GO) test -p 1 -count=1 -tags=integration  $(COVERFLAGS) ./...
 
 test-slow-integration-report: get-test-deps test-slow-integration
 	@gocov convert cover.out | gocov report
@@ -174,7 +200,7 @@ test-slow-integration-report-html: get-test-deps test-slow-integration
 	@gocov convert cover.out | gocov-html > cover.html && open cover.html
 
 test-soak:
-	@CGO_ENABLED=$(CGO_ENABLED) $(GO) test -p 2 -count=1 -tags soak -coverprofile=cover.out ./...
+	@CGO_ENABLED=$(CGO_ENABLED) $(GO) test -p 2 -count=1 -tags soak $(COVERFLAGS) ./...
 
 test1:
 	CGO_ENABLED=$(CGO_ENABLED) $(GO) test ./... -test.v -run $(TEST)
@@ -198,71 +224,56 @@ debuginttest1: inttestbin
 	cd pkg/jx/cmd && dlv --listen=:2345 --headless=true --api-version=2 exec ../../../build/jx-inttest -- -test.run $(TEST)
 
 install: $(GO_DEPENDENCIES) ## Install the binary
-	GOBIN=${GOPATH}/bin $(GO) install $(BUILDFLAGS) cmd/jx/jx.go
+	GOBIN=${GOPATH}/bin $(GO) install $(BUILDFLAGS) $(MAIN_SRC_FILE)
 
 linux: ## Build for Linux
-	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=amd64 $(GO) build $(BUILDFLAGS) -o build/linux/jx cmd/jx/jx.go
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=amd64 $(GO) $(BUILD_TARGET) $(BUILDFLAGS) -o build/linux/$(NAME) $(MAIN_SRC_FILE)
+	chmod +x build/linux/$(NAME)
 
 arm: ## Build for ARM
-	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=arm $(GO) build $(BUILDFLAGS) -o build/$(NAME)-arm cmd/jx/jx.go
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=arm $(GO) $(BUILD_TARGET) $(BUILDFLAGS) -o build/arm/$(NAME) $(MAIN_SRC_FILE)
+	chmod +x build/arm/$(NAME)
 
 win: ## Build for Windows
-	CGO_ENABLED=$(CGO_ENABLED) GOOS=windows GOARCH=amd64 $(GO) build $(BUILDFLAGS) -o build/$(NAME).exe cmd/jx/jx.go
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=windows GOARCH=amd64 $(GO) $(BUILD_TARGET) $(BUILDFLAGS) -o build/win/$(NAME)-windows-amd64.exe $(MAIN_SRC_FILE)
 
 win32:
-	CGO_ENABLED=$(CGO_ENABLED) GOOS=windows GOARCH=386 $(GO) build $(BUILDFLAGS) -o build/$(NAME)-386.exe cmd/jx/jx.go
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=windows GOARCH=386 $(GO) $(BUILD_TARGET) $(BUILDFLAGS) -o build/win32/$(NAME)-386.exe $(MAIN_SRC_FILE)
 
 darwin: ## Build for OSX
-	CGO_ENABLED=$(CGO_ENABLED) GOOS=darwin GOARCH=amd64 $(GO) build $(BUILDFLAGS) -o build/darwin/jx cmd/jx/jx.go
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=darwin GOARCH=amd64 $(GO) $(BUILD_TARGET) $(BUILDFLAGS) -o build/darwin/$(NAME) $(MAIN_SRC_FILE)
+	chmod +x build/darwin/$(NAME)
 
 .PHONY: release
-release: build test-slow-integration ## Release the binary
-	rm -rf build release && mkdir build release
-	for os in linux darwin ; do \
-		CGO_ENABLED=$(CGO_ENABLED) GOOS=$$os GOARCH=amd64 $(GO) build $(BUILDFLAGS) -o build/$$os/$(NAME) cmd/jx/jx.go ; \
-	done
-	CGO_ENABLED=$(CGO_ENABLED) GOOS=windows GOARCH=amd64 $(GO) build $(BUILDFLAGS) -o build/$(NAME)-windows-amd64.exe cmd/jx/jx.go
-	zip --junk-paths release/$(NAME)-windows-amd64.zip build/$(NAME)-windows-amd64.exe README.md LICENSE
-	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=arm $(GO) build $(BUILDFLAGS) -o build/arm/$(NAME) cmd/jx/jx.go
-
-
-	chmod +x build/darwin/$(NAME)
-	chmod +x build/linux/$(NAME)
-	chmod +x build/arm/$(NAME)
+release: clean build test-slow-integration linux darwin win arm ## Release the binary
+	mkdir release
+	zip --junk-paths release/$(NAME)-windows-amd64.zip build/win/$(NAME)-windows-amd64.exe README.md LICENSE
 
 	cd ./build/darwin; tar -zcvf ../../release/jx-darwin-amd64.tar.gz jx
 	cd ./build/linux; tar -zcvf ../../release/jx-linux-amd64.tar.gz jx
-	cd ./build/arm; tar -zcvf ../../release/jx-linux-arm.tar.gz jx
+	# Don't build the ARM zip for the distro
+	@if [[ -z "${DISTRO}" ]]; then \
+		cd ./build/arm; tar -zcvf ../../release/jx-linux-arm.tar.gz jx; \
+	fi
 
 	go get -u github.com/progrium/gh-release
 	gh-release checksums sha256
-	GITHUB_ACCESS_TOKEN=$(GITHUB_ACCESS_TOKEN) gh-release create jenkins-x/$(NAME) $(VERSION) master $(VERSION)
+	GITHUB_ACCESS_TOKEN=$(GITHUB_ACCESS_TOKEN) gh-release create $(RELEASE_ORG_REPO) $(VERSION) master $(VERSION)
 
-	./build/linux/jx step changelog  --header-file docs/dev/changelog-header.md --version $(VERSION)
+	# Don't create a changelog for the distro
+	@if [[ -z "${DISTRO}" ]]; then \
+		./build/linux/jx step changelog  --header-file docs/dev/changelog-header.md --version $(VERSION); \
+	fi
 
+.PHONY: release-distro
 release-distro:
-	rm -rf build release && mkdir build release
+	@$(MAKE) DISTRO=true release
 
-	CGO_ENABLED=$(CGO_ENABLED) GOOS=darwin GOARCH=amd64 $(GO) build $(BUILDFLAGS) -ldflags "-X $(ROOT_PACKAGE)/pkg/features.FeatureFlagToken=$(FEATURE_FLAG_TOKEN)" -o build/darwin/$(NAME) cmd/jx/jx.go
-	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=amd64 $(GO) build $(BUILDFLAGS) -ldflags "-X $(ROOT_PACKAGE)/pkg/features.FeatureFlagToken=$(FEATURE_FLAG_TOKEN)" -o build/linux/$(NAME) cmd/jx/jx.go
-	CGO_ENABLED=$(CGO_ENABLED) GOOS=windows GOARCH=amd64 $(GO) build $(BUILDFLAGS) -ldflags "-X $(ROOT_PACKAGE)/pkg/features.FeatureFlagToken=$(FEATURE_FLAG_TOKEN)" -o build/$(NAME)-windows-amd64.exe cmd/jx/jx.go
-	zip --junk-paths release/cjxd-$(NAME)-windows-amd64.zip build/$(NAME)-windows-amd64.exe README.md LICENSE
-
-	chmod +x build/darwin/$(NAME)
-	chmod +x build/linux/$(NAME)
-
-	cd ./build/darwin; tar -zcvf ../../release/cjxd-darwin-amd64.tar.gz jx
-	cd ./build/linux; tar -zcvf ../../release/cjxd-linux-amd64.tar.gz jx
-
-	gh-release checksums sha256
-	GITHUB_ACCESS_TOKEN=$(GITHUB_ACCESS_TOKEN) gh-release create cloudbees/cloudbees-jenkins-x-distro $(VERSION) master $(VERSION)
-
+.PHONY: clean
 clean: ## Clean the generated artifacts
 	rm -rf build release cover.out cover.html
 
-richgo:
-	go get -u github.com/kyoh86/richgo
-
+.PHONY: codecov-upload
 codecov-upload:
 	DOCKER_REPO="$(CODECOV_SLUG)" \
 	SOURCE_COMMIT="$(CODECOV_SHA)" \
